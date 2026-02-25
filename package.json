@@ -1,0 +1,22 @@
+{
+  "name": "web-scraper",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "axios": "^1.13.5",
+    "tsx": "^4.21.0",
+    "util": "^0.12.5",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "@types/xml2js": "^0.4.14"
+  }
+}

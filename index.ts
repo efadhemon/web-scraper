@@ -3,6 +3,7 @@ import axios from "axios";
 import * as fs from "fs";
 import { promisify } from "util";
 import { parseString } from "xml2js";
+import { runLoadTest, printLoadTestSummary } from "./load-test.js";
 
 const parseXML = promisify(parseString);
 
@@ -152,52 +153,123 @@ export async function checkPageExist(url: string): Promise<boolean> {
   }
 }
 
-// Get sitemap URL from command line argument
-const sitemapUrl: string = process.argv[2];
-
-if (!sitemapUrl) {
-  console.error("Usage: yarn start <sitemap-url>");
-  console.error("Example: yarn start https://efadhemon.dev/sitemap.xml");
-  process.exit(1);
-}
-
-const urls: string[] = await extractUrlsFromSitemap(sitemapUrl, new Set<string>());
-console.log(`Extracted URLs: ${urls.length}`);
+// Parse command line arguments
+const args = process.argv.slice(2);
+const command = args[0];
 
 // Ensure output directory exists
 if (!fs.existsSync("output")) {
   fs.mkdirSync("output", { recursive: true });
 }
 
-const jsonOutput = JSON.stringify(urls, null, 2);
-fs.writeFileSync("output/urls.json", jsonOutput);
-console.log("URLs saved to output/urls.json");
-
-// Check each URL for 404s
-console.log("Checking pages for 404 errors...");
-const notFoundUrls: string[] = [];
-
-for (let i = 0; i < urls.length; i++) {
-  const url = urls[i];
-  try {
-    const exists = await checkPageExist(url);
-    if (!exists) {
-      notFoundUrls.push(url);
-      console.log(`[${i + 1}/${urls.length}] 404 Not Found: ${url}`);
-    } else {
-      console.log(`[${i + 1}/${urls.length}] OK: ${url}`);
-    }
-  } catch (error) {
-    console.error(`[${i + 1}/${urls.length}] Error checking ${url}:`, error instanceof Error ? error.message : error);
-  }
-  // Delay between requests
-  await new Promise((resolve) => setTimeout(resolve, 300));
+// Display usage information
+function showUsage() {
+  console.log("Usage:");
+  console.log("  yarn start <sitemap-url>                              - Extract URLs and check for 404s");
+  console.log("  yarn start loadtest [options]                         - Run load test on extracted URLs");
+  console.log("");
+  console.log("Load Test Options:");
+  console.log("  --concurrency <num>     Number of concurrent requests (default: 10)");
+  console.log("  --requests <num>        Requests per URL (default: 1)");
+  console.log("  --duration <seconds>    Max duration for the test (optional)");
+  console.log("  --urls <file>           Path to URLs JSON file (default: output/urls.json)");
+  console.log("");
+  console.log("Examples:");
+  console.log("  yarn start https://viewsbangladesh.com/sitemap.xml");
+  console.log("  yarn start loadtest --concurrency 20 --requests 5");
+  console.log("  yarn start loadtest --concurrency 50 --duration 60");
 }
 
-// Save 404 URLs to JSON file
-const notFoundOutput = JSON.stringify(notFoundUrls, null, 2);
-fs.writeFileSync("output/404-pages.json", notFoundOutput);
-console.log(`\nFound ${notFoundUrls.length} pages returning 404`);
-console.log("404 pages saved to output/404-pages.json");
+// Load test command
+if (command === "loadtest") {
+  const concurrencyIndex = args.indexOf("--concurrency");
+  const requestsIndex = args.indexOf("--requests");
+  const durationIndex = args.indexOf("--duration");
+  const urlsIndex = args.indexOf("--urls");
 
-console.log("Web scraping completed.");
+  const concurrency = concurrencyIndex !== -1 ? parseInt(args[concurrencyIndex + 1]) : 10;
+  const requestsPerUrl = requestsIndex !== -1 ? parseInt(args[requestsIndex + 1]) : 1;
+  const durationArg = durationIndex !== -1 ? parseInt(args[durationIndex + 1]) : undefined;
+  const urlsFile = urlsIndex !== -1 ? args[urlsIndex + 1] : "output/urls.json";
+
+  // Load URLs from file
+  if (!fs.existsSync(urlsFile)) {
+    console.error(`Error: URLs file not found: ${urlsFile}`);
+    console.error("Run the scraper first to extract URLs, or specify a different file with --urls");
+    process.exit(1);
+  }
+
+  const urlsData = fs.readFileSync(urlsFile, "utf-8");
+  const urls: string[] = JSON.parse(urlsData);
+
+  if (urls.length === 0) {
+    console.error("Error: No URLs found in the file");
+    process.exit(1);
+  }
+
+  console.log(`Loaded ${urls.length} URLs from ${urlsFile}`);
+
+  // Run load test
+  const { results, summary } = await runLoadTest(urls, {
+    concurrency,
+    requestsPerUrl,
+    duration: durationArg,
+  });
+
+  // Print summary
+  printLoadTestSummary(summary);
+
+  // Save detailed results
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const resultsFile = `output/loadtest-results-${timestamp}.json`;
+  fs.writeFileSync(resultsFile, JSON.stringify({ summary, results }, null, 2));
+  console.log(`Detailed results saved to ${resultsFile}`);
+
+  // Save summary
+  const summaryFile = `output/loadtest-summary-${timestamp}.json`;
+  fs.writeFileSync(summaryFile, JSON.stringify(summary, null, 2));
+  console.log(`Summary saved to ${summaryFile}`);
+}
+// Scrape and check 404s (default behavior)
+else if (command && !command.startsWith("--")) {
+  const sitemapUrl: string = command;
+
+  const urls: string[] = await extractUrlsFromSitemap(sitemapUrl, new Set<string>());
+  console.log(`Extracted URLs: ${urls.length}`);
+
+  const jsonOutput = JSON.stringify(urls, null, 2);
+  fs.writeFileSync("output/urls.json", jsonOutput);
+  console.log("URLs saved to output/urls.json");
+
+  // Check each URL for 404s
+  console.log("\nChecking pages for 404 errors...");
+  const notFoundUrls: string[] = [];
+
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    try {
+      const exists = await checkPageExist(url);
+      if (!exists) {
+        notFoundUrls.push(url);
+        console.log(`[${i + 1}/${urls.length}] 404 Not Found: ${url}`);
+      } else {
+        console.log(`[${i + 1}/${urls.length}] OK: ${url}`);
+      }
+    } catch (error) {
+      console.error(`[${i + 1}/${urls.length}] Error checking ${url}:`, error instanceof Error ? error.message : error);
+    }
+    // Delay between requests
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+
+  // Save 404 URLs to JSON file
+  const notFoundOutput = JSON.stringify(notFoundUrls, null, 2);
+  fs.writeFileSync("output/404-pages.json", notFoundOutput);
+  console.log(`\nFound ${notFoundUrls.length} pages returning 404`);
+  console.log("404 pages saved to output/404-pages.json");
+
+  console.log("\n💡 Tip: Run 'yarn start loadtest' to perform a load test on these URLs");
+} else {
+  showUsage();
+  process.exit(1);
+}
